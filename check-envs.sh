@@ -3,20 +3,26 @@
 pkgs_req=(x11-utils mesa-utils)
 
 ### Help functions
+bad() {
+    if [ ! -z "$DEBUG" ]; then
+        local msg="$1"; shift
+        printf "==> \033[38;5;199m${msg}\033[00m %s\n" "$@" >&2
+    fi
+}
+
 debug() {
     if [ ! -z "$DEBUG" ]; then
         local msg="$1"; shift
-        printf "==> \033[38;5;196m${msg}\033[00m\n" "$@" >&2
+        printf "==> \033[38;5;196m${msg}\033[00m %s\n" "$@" >&2
     fi
 }
 
 msg() {
     if [ ! -z "$DEBUG" ]; then
         local msg="$1"; shift
-        printf "==> \033[38;5;118m${msg}\033[00m\n" "$@" >&2
+        printf "==> \033[38;5;118m${msg}\033[00m %s\n" "$@" >&2
     fi
 }
-
 
 # direct rendering == no 通常表示驱动安装有问题
 # 但是direct rendering 并不能保证一定有硬件加速
@@ -40,10 +46,11 @@ check_glx() {
     for i in `seq $N`; do 
         eval case=\$case$i
         eval exp=\$exp$i
-        debug "testing ${case}"
+        debug "testing" "${case}"
 
         glxinfo | awk -F: ' $1 ~ /'"$case"'/ { if ($2 ~ /'"$exp"'/) exit 1 }'
         if [ $? -gt 0 ]; then
+            bad "$case" failed
             exit 1
         fi
 
@@ -53,7 +60,7 @@ check_glx() {
 
 #TODO: need to check and review xdriinfo options driver?
 check_dri() {
-    debug "testing dri device"
+    debug testing "dri device"
     if [ ! -c /dev/dri/card0 ]; then exit 1; fi
     debug "pass"
 
@@ -70,10 +77,11 @@ check_dri() {
     for i in `seq $N`; do 
         eval case=\$case$i
         eval exp=\$exp$i
-        debug "testing ${case}"
+        debug "testing" "${case}"
 
         xdriinfo | awk -F: ' $1 ~ /'"$case"'/ { if ($2 ~ /'"$exp"'/) exit 1 }'
         if [ $? -gt 0 ]; then
+            bad "$case" failed
             exit 1
         fi
 
@@ -84,10 +92,12 @@ check_dri() {
 check_drmkms() {
     #TODO: check kernel cmdline to see if kms disabled 
     # either explicitly modeset=0 or vga=xxx video=xxx vesafb=xxx uvesafb=xxx
+    return 0
 }
 
 #TODO: check if commands needed installed
 
+#FIXME: it depends on whether proprietary drivers installed.
 check_glx
 check_dri
 
