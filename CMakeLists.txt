@@ -21,7 +21,7 @@ pkg_check_modules(DEP_LIBS REQUIRED glib-2.0 gobject-2.0 x11 gl xcb glew cogl-1.
 add_compile_options(${DEP_LIBS_CFLAGS})
 include_directories(${DEP_LIBS_INCLUDE_DIRS})
 
-set(TARGETS opengl_test cogl_test)
+set(TARGETS opengl_test cogl_test xorg_test)
 
 foreach(target ${TARGETS})
 add_executable(${target} ${target}.cpp)
