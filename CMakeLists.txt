@@ -16,12 +16,13 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(PkgConfig)
-pkg_check_modules(DEP_LIBS REQUIRED glib-2.0 gobject-2.0 x11 gl xcb glew cogl-1.0)
+pkg_check_modules(DEP_LIBS REQUIRED glib-2.0 gobject-2.0 x11 gl xcb glew cogl-1.0
+    gbm libdrm egl glesv2)
 
 add_compile_options(${DEP_LIBS_CFLAGS})
 include_directories(${DEP_LIBS_INCLUDE_DIRS})
 
-set(TARGETS opengl_test cogl_test xorg_test)
+set(TARGETS opengl_test cogl_test xorg_test drm_test)
 
 foreach(target ${TARGETS})
 add_executable(${target} ${target}.cpp)

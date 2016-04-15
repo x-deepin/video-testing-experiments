@@ -19,7 +19,7 @@ static GLXContext ctx;
 
 int main(int argc, char *argv[])
 {
-    //TODO: create glx context first
+    //TODO: create glx/egl context first
     //
     glewExperimental = GL_TRUE;
     if (glewInit() != GLEW_OK) {
