@@ -92,6 +92,25 @@ check_dri() {
 check_drmkms() {
     #TODO: check kernel cmdline to see if kms disabled 
     # either explicitly modeset=0 or vga=xxx video=xxx vesafb=xxx uvesafb=xxx
+    test_cmdline="""
+BOOT_IMAGE=/boot/vmlinuz-4.4.0-3-deepin-amd64 root=UUID=a30a900b-6a23-490d-a957-6aa0e8907482 ro splash quiet i915.modeset=0
+""";
+
+    # for DDE to work, consider this as fault
+    awk '
+{for (i = 1; i <= NF; i++) {
+    if ($i == "nomodeset") {
+        exit 1
+    } else if ($i ~ /(i915|nouveau|amdgpu|radeon)\.modeset=0/) {
+        exit 1
+    }
+}}' <(cat /proc/cmdline)
+
+    if [ $? -gt 0 ]; then
+        bad "disable kms"
+        exit 1
+    fi
+
     return 0
 }
 
@@ -100,4 +119,5 @@ check_drmkms() {
 #FIXME: it depends on whether proprietary drivers installed.
 check_glx
 check_dri
+check_drmkms
 
