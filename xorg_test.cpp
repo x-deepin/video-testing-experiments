@@ -8,6 +8,12 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+#include <X11/Xlib.h>
+#include <X11/extensions/Xrandr.h>
+#include <X11/extensions/shape.h>
+#include <X11/extensions/Xcomposite.h>
+#include <X11/extensions/Xdamage.h>
+
 using namespace std;
 
 static string run_and_collect(const string& cmd)
@@ -44,8 +50,12 @@ static string run_and_collect(const string& cmd)
     return "";
 }
 
-#if 1
-class EnvironmentChecker {
+class Checker {
+    public:
+        virtual int doTest() = 0;
+};
+
+class EnvironmentChecker: public Checker {
 public:
 	struct VideoEnv {
 		static const int Unknown     = 0;
@@ -56,7 +66,7 @@ public:
 		static const int VMWare      = 0x0200;
 	};
 
-	int doTest() {
+	int doTest() override {
 		if (!isDriverLoadedCorrectly()) {
 			return 1;
 		}
@@ -127,11 +137,78 @@ public:
 private:
 	int _video {VideoEnv::Unknown};
 };
-#endif
+
+class ExtensionChecker: public Checker {
+public:
+    int doTest() override {
+
+        int ret = 0;
+
+        Display* display = XOpenDisplay(NULL);
+        if (!display) {
+            return 1;
+        }
+
+        if ((ret = testComposite(display))) {
+            goto _error_out;
+        }
+
+        if ((ret = testDamage(display))) {
+            goto _error_out;
+        }
+
+_error_out:
+        XCloseDisplay(display);
+        return ret;
+    }
+
+private:
+    int testDamage(Display* display) {
+        int damage_event_base;
+        int damage_error_base;
+        if (!XDamageQueryExtension(display, &damage_event_base,
+                    &damage_error_base)) {
+            return 1;
+        }
+
+        return 0;
+    }
+
+    //TODO: do explicit Composite testing: i.e test NameWindowPixmap
+    int testComposite(Display* display) {
+        int composite_event_base;
+        int composite_error_base;
+        int composite_major_version;
+        int composite_minor_version;
+
+        int ret = 0;
+
+        if (!XCompositeQueryExtension(display, &composite_event_base,
+                    &composite_error_base)) {
+            return 1;
+        } else {
+            composite_major_version = 0;
+            composite_minor_version = 0;
+            if (!XCompositeQueryVersion(display, &composite_major_version,
+                        &composite_minor_version)) {
+            return 1;
+            }
+        }
+        return 0;
+    }
+};
 
 int main(int argc, char *argv[])
 {
-    EnvironmentChecker checker;
-    return checker.doTest();
+    Checker* checkers[] = {
+        new EnvironmentChecker(),
+        new ExtensionChecker(),
+    };
+
+    for (int i = 0; i < 2; i++) {
+        if (checkers[i]->doTest()) 
+            return 1;
+    }
+    return 0;
 }
 

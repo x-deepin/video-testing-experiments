@@ -1,3 +1,7 @@
+/**
+ * The test should run on virutal console without Xorg running
+ */
+
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -52,18 +56,52 @@ static void err_quit(const char *fmt, ...)
     va_end(ap);
 }
 
+static ostream& operator<<(ostream& os, drmModeRes* res)
+{
+    os << "fbs = " << res->count_fbs << endl;
+    os << "connectors = " << res->count_connectors << endl;
+    os << "encoders = " << res->count_encoders << endl;
+    os << "crtcs = " << res->count_crtcs;
+
+    return os;
+}
+
+static ostream& operator<<(ostream& os, drmVersionPtr pv)
+{
+    string drv(pv->name, pv->name_len), desc(pv->desc, pv->desc_len);
+
+    return os << "version = " << pv->version_major << "."
+        << pv->version_minor << "." << pv->version_patchlevel
+        << ", driver = " << drv << ", desc = " << desc;
+}
+
+
+// do open test for all gpus and return the first viable 
 static int open_drm_device()
 {
+    int viable = -1;
     //open default dri device
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < DRM_MAX_MINOR; i++) {
         char card[128] = {0};
         snprintf(card, 127, "/dev/dri/card%d", i);
-        std::cerr << "open " << card << endl;
+        std::cerr << "try open " << card << endl;
         int fd = open(card, O_RDWR|O_CLOEXEC|O_NONBLOCK);
-        if (fd >= 0) return fd;
+        if (fd > 0) {
+            if (viable < 0) {
+                viable = fd;
+            }
+
+            auto *pv = drmGetVersion(fd);
+            cerr << pv << endl;
+            drmFreeVersion(pv);
+
+            if (viable != fd) {
+                close(fd);
+            }
+        }
     }
 
-    return -1;
+    return viable;
 }
 
 static void setup_drm()
@@ -72,8 +110,12 @@ static void setup_drm()
     drmModeConnector* connector;            //connector array
     drmModeEncoder* encoder;                //encoder array
 
+    if (!drmAvailable()) {
+        err_quit("drm not loaded");
+    }
+
     dc.fd = open_drm_device();
-    if (dc.fd <= 0) { 
+    if (dc.fd < 0) { 
         err_quit(strerror(errno));
     }
 
@@ -83,6 +125,8 @@ static void setup_drm()
     if(resources == 0) {
         err_quit("drmModeGetResources failed");
     }
+
+    cerr << resources << endl;
 
     int i;
     //acquire drm connector
@@ -135,13 +179,17 @@ static void setup_drm()
 
     dc.saved_crtc = drmModeGetCrtc(dc.fd, dc.crtc);
 
-    fprintf(stderr, "\tMode chosen [%s] : Clock => %d, Vertical refresh => %d, Type => %d\n",
-            dc.mode.name, dc.mode.clock, dc.mode.vrefresh, dc.mode.type);
+    fprintf(stderr, "\tMode chosen [%s] : h: %u, v: %u\n",
+            dc.mode.name, dc.mode.hdisplay, dc.mode.vdisplay);
 
     drmModeFreeConnector(connector);
     drmModeFreeResources(resources);
 }
 
+/**
+ * basically, if we can create an egl context, that means (I assume) drm hardware 
+ * acceleration is working.
+ */
 static void setup_egl()
 {
     dc.gbm = gbm_create_device(dc.fd);
@@ -230,38 +278,42 @@ static void cleanup()
 {
     cerr << __func__ << std::endl;
 
-    drmEventContext ev;
-    memset(&ev, 0, sizeof(ev));
-    ev.version = DRM_EVENT_CONTEXT_VERSION;
-    ev.page_flip_handler = modeset_page_flip_event;
-    //ev.vblank_handler = modeset_vblank_handler;
-    std::cerr << "wait for pending page-flip to complete..." << std::endl;
-    while (dc.pflip_pending) {
-        int ret = drmHandleEvent(dc.fd, &ev);
-        if (ret)
-            break;
+    if (dc.gbm) {
+        drmEventContext ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.version = DRM_EVENT_CONTEXT_VERSION;
+        ev.page_flip_handler = modeset_page_flip_event;
+        //ev.vblank_handler = modeset_vblank_handler;
+        std::cerr << "wait for pending page-flip to complete..." << std::endl;
+        while (dc.pflip_pending) {
+            int ret = drmHandleEvent(dc.fd, &ev);
+            if (ret)
+                break;
+        }
+
+        eglDestroySurface(dc.display, dc.surface);
+        eglDestroyContext(dc.display, dc.gl_context);
+        eglTerminate(dc.display);
+
+        if (dc.bo) {
+            std::cerr << "destroy bo: " << (unsigned long)dc.bo << std::endl;
+            gbm_bo_destroy(dc.bo);
+            std::cerr << "destroy bo: " << (unsigned long)dc.next_bo << std::endl;
+            gbm_bo_destroy(dc.next_bo);
+        }
+
+        if (dc.gbm_surface) {
+            gbm_surface_destroy(dc.gbm_surface);
+            gbm_device_destroy(dc.gbm);
+        }
+
+        if (dc.pflip_pending) std::cerr << "still has pflip pending" << std::endl;
     }
 
-    eglDestroySurface(dc.display, dc.surface);
-    eglDestroyContext(dc.display, dc.gl_context);
-    eglTerminate(dc.display);
-
-    if (dc.bo) {
-        std::cerr << "destroy bo: " << (unsigned long)dc.bo << std::endl;
-        gbm_bo_destroy(dc.bo);
-        std::cerr << "destroy bo: " << (unsigned long)dc.next_bo << std::endl;
-        gbm_bo_destroy(dc.next_bo);
-    }
-
-    if (dc.gbm_surface) {
-        gbm_surface_destroy(dc.gbm_surface);
-        gbm_device_destroy(dc.gbm);
-    }
-
-    if (dc.pflip_pending) std::cerr << "still has pflip pending" << std::endl;
     if (dc.saved_crtc) {
         drmModeSetCrtc(dc.fd, dc.saved_crtc->crtc_id, dc.saved_crtc->buffer_id, 
-                dc.saved_crtc->x, dc.saved_crtc->y, &dc.conn, 1, &dc.saved_crtc->mode);
+                dc.saved_crtc->x, dc.saved_crtc->y, &dc.conn, 1,
+                &dc.saved_crtc->mode);
         drmModeFreeCrtc(dc.saved_crtc);
     }
     drmDropMaster(dc.fd);
@@ -274,6 +326,8 @@ int main(int argc, char *argv[])
 
     setup_egl();
 
+    // TODO: some basic opengl drawing and result matching are needed.
+    
     cleanup();
     return 0;
 }
