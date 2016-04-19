@@ -7,9 +7,22 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
+#include <stdio.h>
+#include <sys/mman.h>
+
+#include <X11/Xlib.h>
 
 #include <xf86drm.h>
 #include <xf86drmMode.h>
+
+#include <libdrm/i915_drm.h>
+#include <libdrm/intel_bufmgr.h>
+#include <libdrm/amdgpu_drm.h>
+#include <libdrm/radeon_drm.h>
+//FIXME: WTF nouveau_drm uses *class* as a struct field name, which failed to 
+//compile using c++!
+#include <libdrm/nouveau_drm.h>
+#include <libdrm/vmwgfx_drm.h>
 
 //include gbm before gl header
 #include <gbm.h>
@@ -17,12 +30,6 @@
 #include <GLES2/gl2ext.h>
 
 #include <EGL/egl.h>
-
-#include <iostream>
-#include <string>
-#include <algorithm>
-
-using namespace std;
 
 struct DisplayContext {
     int fd;                                 //drm device handle
@@ -42,10 +49,18 @@ struct DisplayContext {
     struct gbm_bo *next_bo;
     uint32_t next_fb_id; 
 
-    bool pflip_pending;
-    bool cleanup;
-    bool paused;
+    int pflip_pending;
+    int cleanup;
+    int paused;
 } dc = {0};
+
+static void err_msg(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+}
 
 static void err_quit(const char *fmt, ...)
 {
@@ -56,26 +71,6 @@ static void err_quit(const char *fmt, ...)
     va_end(ap);
 }
 
-static ostream& operator<<(ostream& os, drmModeRes* res)
-{
-    os << "fbs = " << res->count_fbs << endl;
-    os << "connectors = " << res->count_connectors << endl;
-    os << "encoders = " << res->count_encoders << endl;
-    os << "crtcs = " << res->count_crtcs;
-
-    return os;
-}
-
-static ostream& operator<<(ostream& os, drmVersionPtr pv)
-{
-    string drv(pv->name, pv->name_len), desc(pv->desc, pv->desc_len);
-
-    return os << "version = " << pv->version_major << "."
-        << pv->version_minor << "." << pv->version_patchlevel
-        << ", driver = " << drv << ", desc = " << desc;
-}
-
-
 // do open test for all gpus and return the first viable 
 static int open_drm_device()
 {
@@ -84,16 +79,11 @@ static int open_drm_device()
     for (int i = 0; i < DRM_MAX_MINOR; i++) {
         char card[128] = {0};
         snprintf(card, 127, "/dev/dri/card%d", i);
-        std::cerr << "try open " << card << endl;
         int fd = open(card, O_RDWR|O_CLOEXEC|O_NONBLOCK);
         if (fd > 0) {
             if (viable < 0) {
                 viable = fd;
             }
-
-            auto *pv = drmGetVersion(fd);
-            cerr << pv << endl;
-            drmFreeVersion(pv);
 
             if (viable != fd) {
                 close(fd);
@@ -126,8 +116,6 @@ static void setup_drm()
         err_quit("drmModeGetResources failed");
     }
 
-    cerr << resources << endl;
-
     int i;
     //acquire drm connector
     for (i = 0; i < resources->count_connectors; ++i) {
@@ -135,7 +123,6 @@ static void setup_drm()
         if (!connector) continue;
         if (connector->connection == DRM_MODE_CONNECTED && connector->count_modes > 0) {
             dc.conn = connector->connector_id;
-            std::cerr << "find connected connector id " << dc.conn << std::endl;
             break; 
         }
         drmModeFreeConnector(connector);
@@ -157,7 +144,6 @@ static void setup_drm()
     }
 
     if (!encoder) {
-        std::cerr << "connector has no encoder";
         for(i = 0; i < resources->count_encoders; ++i) {
             encoder = drmModeGetEncoder(dc.fd,resources->encoders[i]);
             if(encoder==0) { continue; }
@@ -235,7 +221,7 @@ static void setup_egl()
     }
 
     if (!eglBindAPI(EGL_OPENGL_ES_API)) {
-        std::cerr << "bind api failed" << std::endl;
+        fprintf(stderr, "bind api failed\n");
         exit(-1);
     }
 
@@ -271,20 +257,33 @@ static void modeset_page_flip_event(int fd, unsigned int frame,
         void *data)
 {
     //if (!dc.paused)
-        dc.pflip_pending = false;
+        dc.pflip_pending = 0;
 }
+
+union drm_gem_create {
+    struct drm_i915_gem_create i915;
+    struct drm_radeon_gem_create radeon;
+    union drm_amdgpu_gem_create admgpu;
+    struct drm_nouveau_gem_new nouveau;
+};
+
+//nouveau has no mmap
+union drm_gem_mmap {
+    struct drm_i915_gem_mmap i915;
+    struct drm_radeon_gem_mmap radeon;
+    union drm_amdgpu_gem_mmap admgpu;
+    /*struct drm_nouveau_gem_mmap nouveau;*/
+};
 
 static void cleanup()
 {
-    cerr << __func__ << std::endl;
-
     if (dc.gbm) {
         drmEventContext ev;
         memset(&ev, 0, sizeof(ev));
         ev.version = DRM_EVENT_CONTEXT_VERSION;
         ev.page_flip_handler = modeset_page_flip_event;
         //ev.vblank_handler = modeset_vblank_handler;
-        std::cerr << "wait for pending page-flip to complete..." << std::endl;
+        fprintf(stderr, "wait for pending page-flip to complete...\n");
         while (dc.pflip_pending) {
             int ret = drmHandleEvent(dc.fd, &ev);
             if (ret)
@@ -296,9 +295,7 @@ static void cleanup()
         eglTerminate(dc.display);
 
         if (dc.bo) {
-            std::cerr << "destroy bo: " << (unsigned long)dc.bo << std::endl;
             gbm_bo_destroy(dc.bo);
-            std::cerr << "destroy bo: " << (unsigned long)dc.next_bo << std::endl;
             gbm_bo_destroy(dc.next_bo);
         }
 
@@ -306,28 +303,176 @@ static void cleanup()
             gbm_surface_destroy(dc.gbm_surface);
             gbm_device_destroy(dc.gbm);
         }
-
-        if (dc.pflip_pending) std::cerr << "still has pflip pending" << std::endl;
     }
 
-    if (dc.saved_crtc) {
-        drmModeSetCrtc(dc.fd, dc.saved_crtc->crtc_id, dc.saved_crtc->buffer_id, 
-                dc.saved_crtc->x, dc.saved_crtc->y, &dc.conn, 1,
-                &dc.saved_crtc->mode);
-        drmModeFreeCrtc(dc.saved_crtc);
+    if (dc.fd) {
+        if (dc.saved_crtc) {
+            drmModeSetCrtc(dc.fd, dc.saved_crtc->crtc_id, dc.saved_crtc->buffer_id, 
+                    dc.saved_crtc->x, dc.saved_crtc->y, &dc.conn, 1,
+                    &dc.saved_crtc->mode);
+            drmModeFreeCrtc(dc.saved_crtc);
+        }
+        drmDropMaster(dc.fd);
+        close(dc.fd);
     }
-    drmDropMaster(dc.fd);
-    close(dc.fd);
+}
+
+static int TestGEM() {
+    const char* modules[] = {
+        "i915",
+        "radeon",
+        "nouveau",
+        "vmwgfx", // seems do not support GEM/TTM
+        "amdgpu",
+    };
+
+    //FIXME: check if X is not current running
+
+    int fd = -1;
+    const char* chosen = NULL;
+    for (const char** module = &modules[0]; module != &modules[5]; module++) {
+        printf("trying to open device '%s'...\n", *module);
+
+        //only works on console
+        fd = drmOpen(*module, NULL);
+        if (fd > 0) {
+            chosen = *module;
+            break;
+        }
+    }
+
+    int ret = 0;
+    if (fd < 0) {
+        err_msg("failed to open any modules\n");
+        return 1;
+    }
+
+    drmSetMaster(fd);
+    struct drm_gem_close clreq;
+    void* ptr = NULL;
+    memset(&clreq, 0, sizeof clreq);
+
+    if (strcmp(chosen, "i915") == 0) {
+        drm_intel_bufmgr* bufmgr;
+        drm_intel_bo* bo;
+
+        bufmgr = drm_intel_bufmgr_gem_init(fd, 4096);
+
+        bo = drm_intel_bo_alloc(bufmgr, "gallium3d_texture", 1<<20, 0);
+        if (!bo) {
+            err_msg("drm_intel_bo_alloc failed\n");
+            ret = 1;
+            drm_intel_bufmgr_destroy(bufmgr);
+            goto _out;
+        }
+
+        ret = drm_intel_bo_map(bo, 1);
+        if (ret) {
+            err_msg("drm_intel_bo_map failed\n");
+            ret = 1;
+            drm_intel_bo_unreference(bo);
+            drm_intel_bufmgr_destroy(bufmgr);
+            goto _out;
+        }
+
+        err_msg("addr_ptr = %p\n", (void*)bo->virtual);
+        ptr = mmap(0, bo->size, PROT_WRITE|PROT_READ, MAP_SHARED, fd, bo->virtual);
+        if (ptr == MAP_FAILED) {
+            err_msg("mmap failed: %s\n", strerror(errno));
+            ret = 1;
+            drm_intel_bo_unmap(bo);
+            drm_intel_bo_unreference(bo);
+            drm_intel_bufmgr_destroy(bufmgr);
+            goto _out;
+        }
+
+        // if panic happens, this'll crash and considered as failure
+        //FIXME: this'll crash
+        for (int i = 0; i < bo->size/4; i++) {
+            *(int*)ptr = i;
+        }
+
+        munmap(ptr, bo->size);
+        drm_intel_bo_unmap(bo);
+        drm_intel_bo_unreference(bo);
+        drm_intel_bufmgr_destroy(bufmgr);
+
+    } else if (strcmp(chosen, "radeon") == 0) {
+        struct drm_radeon_gem_create creq;
+        memset(&creq, 0, sizeof creq);
+        creq.size = (1<<20);
+        creq.handle = 0;
+        ret = drmCommandWriteRead(fd, DRM_RADEON_GEM_CREATE, &creq, sizeof creq);
+        if (ret < 0) {
+            err_msg("DRM_RADEON_GEM_CREATE failed\n");
+            ret = 1;
+            goto _out;
+        }
+        
+        clreq.handle = creq.handle;
+
+        struct drm_radeon_gem_mmap mreq;
+        memset(&mreq, 0, sizeof mreq);
+        mreq.handle = creq.handle;
+        mreq.size = creq.size;
+        ret = drmCommandWriteRead(fd, DRM_RADEON_GEM_MMAP, &mreq, sizeof mreq);
+        if (ret < 0) {
+            err_msg("DRM_RADEON_GEM_MMAP failed\n");
+            drmIoctl(fd, DRM_IOCTL_GEM_CLOSE, &clreq);
+            goto _out;
+        }
+        
+        err_msg("addr_ptr = %p\n", mreq.addr_ptr);
+        ptr = mmap(0, mreq.size, PROT_WRITE|PROT_READ, MAP_SHARED, fd, mreq.addr_ptr);
+        if (ptr == MAP_FAILED) {
+            err_msg("mmap failed: %s\n", strerror(errno));
+            ret = 1;
+            goto _out;
+        }
+
+        // if panic happens, this'll crash and considered as failure
+        for (int i = 0; i < mreq.size/4; i++) {
+            *(int*)ptr = i;
+        }
+        munmap(ptr, mreq.size);
+        drmIoctl(fd, DRM_IOCTL_GEM_CLOSE, &clreq);
+    }
+
+_out:
+
+    drmClose(fd);
+    return ret;
+}
+
+static int TestKMS() {
+    setup_drm();    
+    cleanup();
+    return 0;
+}
+
+static int TestRendering () {
+    setup_egl();
+
+    return 0;
 }
 
 int main(int argc, char *argv[])
 {
-    setup_drm();    
-
-    setup_egl();
-
-    // TODO: some basic opengl drawing and result matching are needed.
     
-    cleanup();
-    return 0;
+    typedef int (*TestCase)();
+
+    TestCase tests[] = {
+        TestGEM,
+        TestKMS,
+        TestRendering
+    };
+    
+    int success = 0;
+    for (TestCase* tc = &tests[0]; tc != &tests[3]; tc++) {
+        if ((success = (*tc)())) {
+            break;
+        } 
+    }
+
+    return success;
 }
