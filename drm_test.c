@@ -165,7 +165,7 @@ static void setup_drm()
 
     dc.saved_crtc = drmModeGetCrtc(dc.fd, dc.crtc);
 
-    fprintf(stderr, "\tMode chosen [%s] : h: %u, v: %u\n",
+    fprintf(stderr, "Mode chosen [%s] : h: %u, v: %u\n",
             dc.mode.name, dc.mode.hdisplay, dc.mode.vdisplay);
 
     drmModeFreeConnector(connector);
@@ -213,15 +213,15 @@ static void setup_egl()
     eglInitialize(dc.display, &major, &minor);
     ver = eglQueryString(dc.display, EGL_VERSION);
     extensions = eglQueryString(dc.display, EGL_EXTENSIONS);
-    fprintf(stderr, "ver: %s, ext: %s\n", ver, extensions);
+    err_msg("ver: %s, ext: %s\n", ver, extensions);
 
     if (!strstr(extensions, "EGL_KHR_surfaceless_context")) {
-        fprintf(stderr, "%s\n", "need EGL_KHR_surfaceless_context extension");
+        err_quit("%s\n", "need EGL_KHR_surfaceless_context extension");
         exit(1);
     }
 
     if (!eglBindAPI(EGL_OPENGL_ES_API)) {
-        fprintf(stderr, "bind api failed\n");
+        err_quit("bind api failed\n");
         exit(-1);
     }
 
@@ -283,7 +283,7 @@ static void cleanup()
         ev.version = DRM_EVENT_CONTEXT_VERSION;
         ev.page_flip_handler = modeset_page_flip_event;
         //ev.vblank_handler = modeset_vblank_handler;
-        fprintf(stderr, "wait for pending page-flip to complete...\n");
+        err_msg("wait for pending page-flip to complete...\n");
         while (dc.pflip_pending) {
             int ret = drmHandleEvent(dc.fd, &ev);
             if (ret)
@@ -358,7 +358,7 @@ static int TestGEM() {
 
         bufmgr = drm_intel_bufmgr_gem_init(fd, 4096);
 
-        bo = drm_intel_bo_alloc(bufmgr, "gallium3d_texture", 1<<20, 0);
+        bo = drm_intel_bo_alloc(bufmgr, "test_bo", 4096, 0);
         if (!bo) {
             err_msg("drm_intel_bo_alloc failed\n");
             ret = 1;
@@ -375,24 +375,21 @@ static int TestGEM() {
             goto _out;
         }
 
-        err_msg("addr_ptr = %p\n", (void*)bo->virtual);
-        ptr = mmap(0, bo->size, PROT_WRITE|PROT_READ, MAP_SHARED, fd, bo->virtual);
-        if (ptr == MAP_FAILED) {
-            err_msg("mmap failed: %s\n", strerror(errno));
-            ret = 1;
-            drm_intel_bo_unmap(bo);
-            drm_intel_bo_unreference(bo);
-            drm_intel_bufmgr_destroy(bufmgr);
-            goto _out;
+        ptr = (void*)bo->virtual;
+        err_msg("addr_ptr = %p, size %u\n", ptr, bo->size);
+
+        for (int i = 0; i < bo->size/sizeof(int); i++) {
+            *((int*)ptr+i) = i;
         }
 
-        // if panic happens, this'll crash and considered as failure
-        //FIXME: this'll crash
-        for (int i = 0; i < bo->size/4; i++) {
-            *(int*)ptr = i;
+        for (int i = 0; i < bo->size/sizeof(int); i++) {
+            if (*((int*)ptr+i) != i) {
+                err_msg("write and read failed\n");
+                ret = 1;
+                break;
+            }
         }
 
-        munmap(ptr, bo->size);
         drm_intel_bo_unmap(bo);
         drm_intel_bo_unreference(bo);
         drm_intel_bufmgr_destroy(bufmgr);
@@ -445,13 +442,17 @@ _out:
 }
 
 static int TestKMS() {
+    memset(&dc, 0, sizeof dc);
     setup_drm();    
     cleanup();
     return 0;
 }
 
 static int TestRendering () {
+    memset(&dc, 0, sizeof dc);
+    setup_drm();    
     setup_egl();
+    cleanup();
 
     return 0;
 }
@@ -459,17 +460,22 @@ static int TestRendering () {
 int main(int argc, char *argv[])
 {
     
-    typedef int (*TestCase)();
+    typedef int (*TestFunc)();
 
-    TestCase tests[] = {
-        TestGEM,
-        TestKMS,
-        TestRendering
+    struct TestCase {
+        const char* name; 
+        TestFunc cb;
+    } tests[] = {
+        {"test kms", TestKMS},
+        {"test gem", TestGEM},
+        {"test rendering", TestRendering}
     };
     
     int success = 0;
-    for (TestCase* tc = &tests[0]; tc != &tests[3]; tc++) {
-        if ((success = (*tc)())) {
+    for (struct TestCase* tc = &tests[0]; tc != &tests[3]; tc++) {
+        err_msg("\e[38;5;226mstart %s\e[00m\n", tc->name);
+        if ((success = tc->cb())) {
+            err_msg("\e[38;5;160m%s failed\e[00m\n", tc->name);
             break;
         } 
     }
