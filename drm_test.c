@@ -428,8 +428,16 @@ static int TestGEM() {
         }
 
         // if panic happens, this'll crash and considered as failure
-        for (int i = 0; i < mreq.size/4; i++) {
-            *(int*)ptr = i;
+        for (int i = 0; i < mreq.size/sizeof(int); i++) {
+            *((int*)ptr+i) = i;
+        }
+
+        for (int i = 0; i < mreq.size/sizeof(int); i++) {
+            if (*((int*)ptr+i) != i) {
+                err_msg("write and read failed\n");
+                ret = 1;
+                break;
+            }
         }
         munmap(ptr, mreq.size);
         drmIoctl(fd, DRM_IOCTL_GEM_CLOSE, &clreq);
