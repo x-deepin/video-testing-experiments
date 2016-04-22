@@ -1,0 +1,49 @@
+metadata:
+    name: video-check
+    format: "Lava-Test-Shell Test Definition 1.0"
+    description: "Graphic Stack Testing"
+    os:
+        - ubuntu
+    devices:
+        - vm1
+    scope:
+        - desktop
+    environment:
+        - lava-test-shell
+
+install:
+    deps:
+        - build-essential
+        - cmake
+        - libglib2.0-dev
+        - libx11-dev
+        - libgl1-mesa-dev
+        - libxcb1-dev
+        - libglew-dev
+        - libcogl-dev
+        - libgbm-dev
+        - libdrm-dev
+        - libegl1-mesa-dev
+        - libgles2-mesa-dev
+        - libxrandr-dev
+        - libxcomposite-dev
+        - libxdamage-dev
+        - libcairo2-dev
+        - libharfbuzz-dev
+        - libcogl-path-dev
+        - sudo
+    steps:
+        - mkdir build
+        - cd build
+        - cmake ..
+        - make
+
+params:
+    DESKTOP_OWNER: deepin
+
+run:
+    steps:
+        - sudo -u ${DESKTOP_OWNER} DISPLAY=:0 ./check-envs.sh
+        - sudo -u ${DESKTOP_OWNER} DISPLAY=:0 build/xorg_test
+        - sudo -u ${DESKTOP_OWNER} DISPLAY=:0 build/drm_test
+        - sudo -u ${DESKTOP_OWNER} DISPLAY=:0 build/cogl_test
