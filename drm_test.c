@@ -192,7 +192,7 @@ static void setup_egl()
 
     EGLint major;
     EGLint minor;
-    const char *ver, *extensions;
+    const char *ver, *extensions, *apis;
 
     static const EGLint conf_att[] = {
         EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
@@ -213,7 +213,8 @@ static void setup_egl()
     eglInitialize(dc.display, &major, &minor);
     ver = eglQueryString(dc.display, EGL_VERSION);
     extensions = eglQueryString(dc.display, EGL_EXTENSIONS);
-    err_msg("ver: %s, ext: %s\n", ver, extensions);
+    apis = eglQueryString(dc.display, EGL_CLIENT_APIS);
+    err_msg("ver: %s, ext: %s, apis: %s\n", ver, extensions, apis);
 
     if (!strstr(extensions, "EGL_KHR_surfaceless_context")) {
         err_quit("%s\n", "need EGL_KHR_surfaceless_context extension");

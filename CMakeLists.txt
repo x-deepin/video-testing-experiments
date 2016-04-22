@@ -26,7 +26,7 @@ include_directories(${DEP_LIBS_INCLUDE_DIRS})
 set(TARGETS opengl_test cogl_test xorg_test)
 
 foreach(target ${TARGETS})
-    add_executable(${target} ${target}.cpp)
+    add_executable(${target} ${target}.cpp glutil.cc)
     target_compile_options(${target} PRIVATE -std=c++11)
     target_link_libraries(${target} ${DEP_LIBS_LIBRARIES})
 endforeach()

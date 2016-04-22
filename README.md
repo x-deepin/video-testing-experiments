@@ -6,8 +6,10 @@ needed to be merged into fixme test cases.
 
 thoughts
 ===
-- which needs nomodeset? some intel cards, some with nouveau driver.
+- Q: which needs nomodeset? some intel cards, some with nouveau driver.
 how to detect?
+  A: I found out that most open source drivers actually needs kms to 
+  drive hardware accelaration.
 
 
 todos
