@@ -40,7 +40,7 @@ install:
 
 run:
     steps:
-        - sudo systemctl stop lightdm.service
+        - systemctl is-active lightdm >/dev/null && systemctl stop lightdm
         - build/drm_test
         - . launch-x
         - build/xorg_test
