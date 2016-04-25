@@ -1,0 +1,11 @@
+gate_file=`mktemp -u /tmp/XXXXXX`
+rm -f $gate_file && mkfifo $gate_file
+
+export HOME=/root
+trap "echo >$gate_file; rm -f $gate_file" EXIT
+echo "echo \$DISPLAY >$gate_file; read <$gate_file" >~/.xinitrc
+
+xinit &
+
+read DISPLAY <$gate_file
+export DISPLAY
