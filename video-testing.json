@@ -1,50 +1,40 @@
 {
-    "timeout": 18000,
-    "target": "vm1",
-    "job_name": "video-test",
-
     "actions": [
+    {
+        "command": "deploy_linaro_kernel",
+        "parameters":
         {
-            "command": "deploy_linaro_kernel",
-            "parameters":
-            {
-                "bootloadertype": "ipxe",
-                "kernel": "http://10.3.2.1/vmlinuz",
-                "ramdisk": "http://10.3.2.1/initrd",
-                "target_type": "ubuntu"
-            }
-        },
-        {
-            "command": "boot_linaro_image",
-            "parameters":
-            {
-                "boot_cmds": [
-                    "dhcp net0",
-                    "kernel http://{SERVER_IP}/tmp/{KERNEL} root=/dev/nfs rw nfsroot=10.3.2.1:/srv/nfs/deepin-15-20160604,tcp,hard,intr ip=dhcp console=ttyS1",
-                    "initrd http://{SERVER_IP}/tmp/{RAMDISK}",
-                    "boot"
-                ]
-            }
-        },
-        {
-            "command": "lava_test_shell",
-            "parameters": {
-                "testdef_repos": [
-                    {
-                        "git-repo": "git@172.16.166.138:/var/spool/git/video-testing-experiments.git",
-                        "testdef": "video-testing.yaml",
-                        "parameters": { "DESKTOP_OWNER": "slave" }
-                    }
-                ],
-                "timeout": 900
-            }
-        },
-        {
-            "command": "submit_results",
-            "parameters": {
-                "server": "http://172.16.166.138/RPC2/",
-                "stream": "/anonymous/video/"
-            }
+            "bootloadertype": "ipxe",
+            "kernel": "http://lava.deepin.io/tftpboot/vmlinuz",
+            "nfsrootfs": "http://lava.deepin.io/tftpboot/deepin.tar.gz",
+            "ramdisk": "http://lava.deepin.io/tftpboot/initrd.img",
+            "target_type": "deepin"
         }
-    ]
+    },
+    {
+        "command": "boot_linaro_image"
+    },
+    {
+        "command": "lava_test_shell",
+        "parameters":
+        {
+            "testdef_repos": [
+            {
+                "git-repo": "http://github.com/x-deepin/video-testing-experiments.git",
+                "testdef": "video-testing.yaml"
+            }],
+            "timeout": 900
+        }
+    },
+    {
+        "command": "submit_results",
+        "parameters":
+        {
+            "server": "http://lava.deepin.io/RPC2/",
+            "stream": "/anonymous/network/"
+        }
+    }],
+    "device_type": "x86_skip_ipxe",
+    "job_name": "video-testing",
+    "timeout": 18000
 }
