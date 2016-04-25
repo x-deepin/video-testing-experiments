@@ -38,13 +38,11 @@ install:
         - cmake ..
         - make
 
-params:
-    DESKTOP_OWNER: deepin
-
 run:
     steps:
-        - sudo -u ${DESKTOP_OWNER} DISPLAY=:0 ./check-envs.sh
-        - sudo -u ${DESKTOP_OWNER} DISPLAY=:0 build/xorg_test
-        - sudo -u ${DESKTOP_OWNER} build/drm_test
-        - sudo -u ${DESKTOP_OWNER} DISPLAY=:0 build/opengl_test
-        - sudo -u ${DESKTOP_OWNER} DISPLAY=:0 build/cogl_test
+        - sudo systemctl stop lightdm.service
+        - build/drm_test
+        - . launch-x
+        - build/xorg_test
+        - build/opengl_test
+        - build/cogl_test
