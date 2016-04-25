@@ -32,6 +32,7 @@ install:
         - libharfbuzz-dev
         - libcogl-path-dev
         - sudo
+        - xinit
     steps:
         - mkdir build
         - cd build
