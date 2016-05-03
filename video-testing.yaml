@@ -41,9 +41,10 @@ install:
 
 run:
     steps:
-        - systemctl is-active lightdm >/dev/null && systemctl stop lightdm
+        - 'set -x'
+        - 'systemctl is-active lightdm && systemctl stop lightdm'
         - build/drm_test
-        - . launch-x
+        - '. launch-x'
         - build/xorg_test
         - build/opengl_test
         - build/cogl_test
