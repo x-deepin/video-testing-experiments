@@ -3,7 +3,7 @@ rm -f $gate_file && mkfifo $gate_file
 
 export HOME=/root
 trap "echo >$gate_file; rm -f $gate_file" EXIT
-echo "echo \$DISPLAY >$gate_file; read <$gate_file" >~/.xinitrc
+echo "echo \$DISPLAY >$gate_file; read REPLY <$gate_file" >~/.xinitrc
 
 xinit &
 
