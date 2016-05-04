@@ -42,7 +42,7 @@ install:
 run:
     steps:
         - 'set -x'
-        - 'systemctl stop lightdm || true'
+        - 'systemctl is-active lightdm && systemctl stop lightdm || true'
         - build/drm_test
         - '. launch-x'
         - build/xorg_test
