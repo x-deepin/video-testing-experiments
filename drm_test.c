@@ -71,29 +71,6 @@ static void err_quit(const char *fmt, ...)
     va_end(ap);
 }
 
-// do open test for all gpus and return the first viable 
-static int open_drm_device()
-{
-    int viable = -1;
-    //open default dri device
-    for (int i = 0; i < DRM_MAX_MINOR; i++) {
-        char card[128] = {0};
-        snprintf(card, 127, "/dev/dri/card%d", i);
-        int fd = open(card, O_RDWR|O_CLOEXEC|O_NONBLOCK);
-        if (fd > 0) {
-            if (viable < 0) {
-                viable = fd;
-            }
-
-            if (viable != fd) {
-                close(fd);
-            }
-        }
-    }
-
-    return viable;
-}
-
 static int setup_drm()
 {
     drmModeRes* resources;                  //resource array
@@ -104,37 +81,64 @@ static int setup_drm()
         err_quit("drm not loaded");
     }
 
-    dc.fd = open_drm_device();
-    if (dc.fd < 0) { 
-        err_msg(strerror(errno));
-        return 1;
+    //open default dri device
+    for (int i = 0; i < DRM_MAX_MINOR; i++) {
+        char card[128] = {0};
+        snprintf(card, 127, "/dev/dri/card%d", i);
+        if (access(card, R_OK)) continue;
+
+        int fd = open(card, O_RDWR|O_CLOEXEC|O_NONBLOCK);
+        if (fd < 0) {
+            err_msg("open device failed: %s\n", strerror(errno));
+            return 1;
+        }
+
+        //this need root, but it seems we do not need master here.
+        /*if (drmSetMaster(fd)) {*/
+            /*err_msg("setting master failed: %s\n", strerror(errno));*/
+            /*close(fd);*/
+            /*continue;*/
+        /*}*/
+
+        //try to acquire drm resources
+        resources = drmModeGetResources(fd);
+        if(resources == 0) {
+            err_msg("drmModeGetResources failed\n");
+            close(fd);
+            continue;
+        }
+
+        //acquire drm connector
+        int j;
+        for (j = 0; j < resources->count_connectors; ++j) {
+            connector = drmModeGetConnector(fd, resources->connectors[j]);
+            if (!connector) continue;
+            if (connector->connection == DRM_MODE_CONNECTED && connector->count_modes > 0) {
+                dc.conn = connector->connector_id;
+                break; 
+            }
+            drmModeFreeConnector(connector);
+        }
+        // if there is no active connector, maybe best quit test silently
+        if (j == resources->count_connectors) {
+            err_msg("'card%d' No active connector found!\n", i);
+            dc.fd = -2;
+            close(fd);
+            continue;
+        }
+
+        dc.fd = fd;
+        err_msg("setup to test card%d\n", i);
+        break;
     }
 
-    drmSetMaster(dc.fd);
-    //acquire drm resources
-    resources = drmModeGetResources(dc.fd);
-    if(resources == 0) {
-        err_msg("drmModeGetResources failed");
-        return 1;
+    if (dc.fd < 0) {
+        err_msg("can not open any drm devices\n");
+        // if no connectors at all, consider it not an error.
+        return dc.fd == -1 ? 1:0;
     }
 
     int i;
-    //acquire drm connector
-    for (i = 0; i < resources->count_connectors; ++i) {
-        connector = drmModeGetConnector(dc.fd,resources->connectors[i]);
-        if (!connector) continue;
-        if (connector->connection == DRM_MODE_CONNECTED && connector->count_modes > 0) {
-            dc.conn = connector->connector_id;
-            break; 
-        }
-        drmModeFreeConnector(connector);
-    }
-
-    // if there is no active connector, maybe best quit test silently
-    if (i == resources->count_connectors) {
-        err_msg("No active connector found!");
-        return 0;
-    }
 
     encoder = NULL;
     if (connector->encoder_id) {
@@ -302,6 +306,7 @@ static void cleanup()
                     &dc.saved_crtc->mode);
             drmModeFreeCrtc(dc.saved_crtc);
         }
+        drmDropMaster(dc.fd);
         close(dc.fd);
     }
 }
@@ -310,8 +315,6 @@ static int doGEM(const char* chosen, int fd)
 {
     int ret = 0;
 
-    /*drmSetMaster(fd);*/
-        /*drmDropMaster(dc.fd);*/
 
     struct drm_gem_close clreq;
     void* ptr = NULL;
@@ -415,25 +418,30 @@ _out:
 // test all available devices
 static int TestGEM() 
 {
-    const char* modules[] = {
-        "i915",
-        "radeon",
-        "nouveau",
-        "vmwgfx", // seems do not support GEM/TTM
-        "amdgpu",
-    };
+    for (int i = 0; i < DRM_MAX_MINOR; i++) {
+        char card[128] = {0};
+        snprintf(card, 127, "/dev/dri/card%d", i);
+        if (access(card, R_OK)) continue;
 
-    int fd = -1;
-    const char* chosen = NULL;
-    for (const char** module = &modules[0]; module != &modules[5]; module++) {
-        //only works on console
-        fd = drmOpen(*module, NULL);
+        err_msg("open '%s'\n", card);
+        int fd = open(card, O_RDWR|O_CLOEXEC|O_NONBLOCK);
         if (fd > 0) {
-            chosen = *module;
-            err_msg("opened device '%s', do gem test...\n", *module);
-            int ret = doGEM(chosen, fd);
-            drmClose(fd);
+            drmVersionPtr ver = drmGetVersion(fd);
+            if (!ver) {
+                err_msg("drmGetVersion failed\n");
+                close(fd);
+                return 1;
+            }
+
+            err_msg("do gem test with %s...\n", ver->name);
+            int ret = doGEM(ver->name, fd);
+            drmFreeVersion(ver);
+            close(fd);
             if (ret) return 1;
+        } else {
+            err_msg("%s\n", strerror(errno));
+            if (errno != EINTR || errno != EAGAIN)
+                return 1;
         }
     }
 
@@ -446,6 +454,7 @@ static int TestDevs()
     for (int i = 0; i < DRM_MAX_MINOR; i++) {
         char card[128] = {0};
         snprintf(card, 127, "/dev/dri/card%d", i);
+        if (access(card, R_OK)) continue;
         int fd = open(card, O_RDWR|O_CLOEXEC|O_NONBLOCK);
         if (fd > 0) {
 
