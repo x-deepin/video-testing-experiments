@@ -52,7 +52,7 @@ struct DisplayContext {
     int pflip_pending;
     int cleanup;
     int paused;
-} dc = {0};
+} dc = {-1, 0, };
 
 static void err_msg(const char *fmt, ...)
 {
@@ -94,7 +94,7 @@ static int open_drm_device()
     return viable;
 }
 
-static void setup_drm()
+static int setup_drm()
 {
     drmModeRes* resources;                  //resource array
     drmModeConnector* connector;            //connector array
@@ -106,14 +106,16 @@ static void setup_drm()
 
     dc.fd = open_drm_device();
     if (dc.fd < 0) { 
-        err_quit(strerror(errno));
+        err_msg(strerror(errno));
+        return 1;
     }
 
     drmSetMaster(dc.fd);
     //acquire drm resources
     resources = drmModeGetResources(dc.fd);
     if(resources == 0) {
-        err_quit("drmModeGetResources failed");
+        err_msg("drmModeGetResources failed");
+        return 1;
     }
 
     int i;
@@ -128,8 +130,10 @@ static void setup_drm()
         drmModeFreeConnector(connector);
     }
 
+    // if there is no active connector, maybe best quit test silently
     if (i == resources->count_connectors) {
-        err_quit("No active connector found!");
+        err_msg("No active connector found!");
+        return 0;
     }
 
     encoder = NULL;
@@ -165,11 +169,12 @@ static void setup_drm()
 
     dc.saved_crtc = drmModeGetCrtc(dc.fd, dc.crtc);
 
-    fprintf(stderr, "Mode chosen [%s] : h: %u, v: %u\n",
+    err_msg("Mode chosen [%s] : h: %u, v: %u\n",
             dc.mode.name, dc.mode.hdisplay, dc.mode.vdisplay);
 
     drmModeFreeConnector(connector);
     drmModeFreeResources(resources);
+    return 0;
 }
 
 /**
@@ -257,24 +262,8 @@ static void modeset_page_flip_event(int fd, unsigned int frame,
         unsigned int sec, unsigned int usec,
         void *data)
 {
-    //if (!dc.paused)
-        dc.pflip_pending = 0;
+    dc.pflip_pending = 0;
 }
-
-union drm_gem_create {
-    struct drm_i915_gem_create i915;
-    struct drm_radeon_gem_create radeon;
-    union drm_amdgpu_gem_create admgpu;
-    struct drm_nouveau_gem_new nouveau;
-};
-
-//nouveau has no mmap
-union drm_gem_mmap {
-    struct drm_i915_gem_mmap i915;
-    struct drm_radeon_gem_mmap radeon;
-    union drm_amdgpu_gem_mmap admgpu;
-    /*struct drm_nouveau_gem_mmap nouveau;*/
-};
 
 static void cleanup()
 {
@@ -306,49 +295,24 @@ static void cleanup()
         }
     }
 
-    if (dc.fd) {
+    if (dc.fd >= 0) {
         if (dc.saved_crtc) {
             drmModeSetCrtc(dc.fd, dc.saved_crtc->crtc_id, dc.saved_crtc->buffer_id, 
                     dc.saved_crtc->x, dc.saved_crtc->y, &dc.conn, 1,
                     &dc.saved_crtc->mode);
             drmModeFreeCrtc(dc.saved_crtc);
         }
-        drmDropMaster(dc.fd);
         close(dc.fd);
     }
 }
 
-static int TestGEM() {
-    const char* modules[] = {
-        "i915",
-        "radeon",
-        "nouveau",
-        "vmwgfx", // seems do not support GEM/TTM
-        "amdgpu",
-    };
-
-    //FIXME: check if X is not current running
-
-    int fd = -1;
-    const char* chosen = NULL;
-    for (const char** module = &modules[0]; module != &modules[5]; module++) {
-        printf("trying to open device '%s'...\n", *module);
-
-        //only works on console
-        fd = drmOpen(*module, NULL);
-        if (fd > 0) {
-            chosen = *module;
-            break;
-        }
-    }
-
+static int doGEM(const char* chosen, int fd)
+{
     int ret = 0;
-    if (fd < 0) {
-        err_msg("failed to open any modules\n");
-        return 1;
-    }
 
-    drmSetMaster(fd);
+    /*drmSetMaster(fd);*/
+        /*drmDropMaster(dc.fd);*/
+
     struct drm_gem_close clreq;
     void* ptr = NULL;
     memset(&clreq, 0, sizeof clreq);
@@ -445,21 +409,69 @@ static int TestGEM() {
     }
 
 _out:
-
-    drmClose(fd);
     return ret;
 }
 
-static int TestKMS() {
+// test all available devices
+static int TestGEM() 
+{
+    const char* modules[] = {
+        "i915",
+        "radeon",
+        "nouveau",
+        "vmwgfx", // seems do not support GEM/TTM
+        "amdgpu",
+    };
+
+    int fd = -1;
+    const char* chosen = NULL;
+    for (const char** module = &modules[0]; module != &modules[5]; module++) {
+        //only works on console
+        fd = drmOpen(*module, NULL);
+        if (fd > 0) {
+            chosen = *module;
+            err_msg("opened device '%s', do gem test...\n", *module);
+            int ret = doGEM(chosen, fd);
+            drmClose(fd);
+            if (ret) return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int TestDevs() 
+{
+    //open default dri device
+    for (int i = 0; i < DRM_MAX_MINOR; i++) {
+        char card[128] = {0};
+        snprintf(card, 127, "/dev/dri/card%d", i);
+        int fd = open(card, O_RDWR|O_CLOEXEC|O_NONBLOCK);
+        if (fd > 0) {
+
+            //TODO: do basic test
+            close(fd);
+        }
+    }
+    return 0;
+}
+
+static int TestKMS() 
+{
     memset(&dc, 0, sizeof dc);
-    setup_drm();    
+    dc.fd = -1;
+    if (setup_drm())
+        return 1;
     cleanup();
     return 0;
 }
 
-static int TestRendering () {
+static int TestRendering () 
+{
     memset(&dc, 0, sizeof dc);
-    setup_drm();    
+    dc.fd = -1;
+    if (setup_drm())
+        return 1;
     setup_egl();
     cleanup();
 
@@ -475,6 +487,7 @@ int main(int argc, char *argv[])
         const char* name; 
         TestFunc cb;
     } tests[] = {
+        {"test open all drm devices", TestDevs},
         {"test kms", TestKMS},
         {"test gem", TestGEM},
         {"test rendering", TestRendering}

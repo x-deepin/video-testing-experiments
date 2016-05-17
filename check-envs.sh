@@ -114,9 +114,7 @@ BOOT_IMAGE=/boot/vmlinuz-4.4.0-3-deepin-amd64 root=UUID=a30a900b-6a23-490d-a957-
     return 0
 }
 
-#TODO: check if commands needed installed
-
-#FIXME: it depends on whether proprietary drivers installed.
+#by default the proprietary drivers are not installed, so we do not take care of that
 check_glx
 check_dri
 check_drmkms

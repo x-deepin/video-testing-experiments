@@ -6,10 +6,10 @@
 #include <random>
 
 #include <X11/Xlib.h>
-#include <GL/gl.h>
-#include <EGL/egl.h>
+//#include <GL/gl.h>
 
 #include "glutil.h"
+#include <EGL/egl.h>
 
 #define err_msg(...) do { \
     fprintf(stderr, __VA_ARGS__); \
@@ -146,7 +146,6 @@ static void render()
     if (red > 1.0) red = 0.0;
 
     glDrawArrays(GL_TRIANGLES, 0, 6);
-    glEnd();
 }
 
 static long get_time()
