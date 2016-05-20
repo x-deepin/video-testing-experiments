@@ -6,21 +6,21 @@ pkgs_req=(x11-utils mesa-utils)
 bad() {
     if [ ! -z "$DEBUG" ]; then
         local msg="$1"; shift
-        printf "==> \033[38;5;199m${msg}\033[00m %s\n" "$@" >&2
+        printf "==> \033[38;5;199m${msg}\033[00m %s\n" "$*" >&2
     fi
 }
 
 debug() {
     if [ ! -z "$DEBUG" ]; then
         local msg="$1"; shift
-        printf "==> \033[38;5;196m${msg}\033[00m %s\n" "$@" >&2
+        printf "==> \033[38;5;196m${msg}\033[00m %s\n" "$*" >&2
     fi
 }
 
 msg() {
     if [ ! -z "$DEBUG" ]; then
         local msg="$1"; shift
-        printf "==> \033[38;5;118m${msg}\033[00m %s\n" "$@" >&2
+        printf "==> \033[38;5;118m${msg}\033[00m %s\n" "$*" >&2
     fi
 }
 
