@@ -136,6 +136,8 @@ parse_provider_by_outputs() {
 
     # the reason I split connector name into pieces is that xrandr may shows as DP1
     # while drm may shows as DP-1
+    # FIXME: there is a possibility that the two names does not match at all. 
+    # (e.g HDMI1 vs HDMI-A-1). need to improve.
     conn=( `awk '
         $0 ~ /connected/ {
         n = patsplit($1, a, /[a-zA-Z]+|[0-9]+/)
@@ -269,6 +271,11 @@ test_switch() {
 }
 
 check_driver_loaded() {
+    cards=(`echo -n /sys/class/drm/card?`)
+    if [[ ${#cards[@]} -lt 2 ]]; then
+        return 1
+    fi
+
     for card in /sys/class/drm/card?; do 
         if [[ ! -e $card/device/driver ]]; then
             return 1
