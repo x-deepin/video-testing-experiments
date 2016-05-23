@@ -102,7 +102,7 @@ get_provider_names() {
                 print a[i] 
             }
         }
-    } ' <(DISPLAY=:0 xrandr --listproviders)
+    } ' <(xrandr --listproviders)
 }
 
 # we assume no more than two cards exists
@@ -137,7 +137,7 @@ parse_provider_by_outputs() {
         for (i = 0; i <= n; i++)
             print a[i]
             exit 
-        }' <(DISPLAY=:0 xrandr)` )
+        }' <(xrandr)` )
 
     names=(`get_provider_names`)
 
@@ -224,6 +224,27 @@ parse_sysfs_for_info() {
     done
 }
 
+parse_offloading_capable() {
+    declare -a dis_caps igd_caps
+
+    dis_caps=(`awk '
+            $0 ~ /name:'"$DIS_NAME"'/ {
+                print (tolower($0) ~ "source offload" ? "1":"0")
+                print (tolower($0) ~ "sink offload" ? "1":"0")
+            }' <(xrandr --listproviders)`)
+
+    igd_caps=(`awk '
+            $0 ~ /name:'"$IGD_NAME"'/ {
+                print (tolower($0) ~ "source offload" ? "1":"0")
+                print (tolower($0) ~ "sink offload" ? "1":"0")
+            }' <(xrandr --listproviders)`)
+
+    DIS_SRC_OFFLOAD=${dis_caps[0]}
+    DIS_SINK_OFFLOAD=${dis_caps[1]}
+    IGD_SRC_OFFLOAD=${igd_caps[0]}
+    IGD_SINK_OFFLOAD=${igd_caps[1]}
+}
+
 parse_cards_info() {
     if has_vgaswitcheroo; then
         parse_vgaswitch_file
@@ -235,15 +256,44 @@ parse_cards_info() {
     parse_sysfs_for_info
 
     parse_provider_by_outputs
+
+    parse_offloading_capable
 }
 
-offloding_capable() {
-    false
+#------------------------------------------------------------------------------
+
+check_glx() {
+    local case1="direct rendering"
+    local exp1="yes"
+
+    local case2="OpenGL renderer string"
+    local exp2="llvmpipe|swrast|software rasterizer"
+
+    local case3="OpenGL version string"
+    local exp3="^1\.[0-9]"
+
+    local N=3
+
+    if ! `glxinfo >/dev/null 2>&1`; then 
+        msg "glxinfo failed"
+        exit 1; 
+    fi
+
+    for i in `seq $N`; do 
+        eval case=\$case$i
+        eval exp=\$exp$i
+        debug "testing" "${case}"
+
+        glxinfo | awk -F: ' $1 ~ /'"$case"'/ { if ($2 ~ /'"$exp"'/) exit 1 }'
+        if [ $? -gt 0 ]; then
+            bad "$case" failed
+            exit 1
+        fi
+
+        debug "pass"
+    done
 }
 
-test_offload_rendering() {
-    [[ ! offloding_capable ]] && return 0
-}
 
 # check if current driving device is $arg1
 check_vgaswitcheroo_result() {
@@ -293,6 +343,8 @@ test_switch_vgaswitcheroo() {
         bad "switch to IGD failed"
         exit 1
     fi
+    #TODO: may be do basic dri check
+
     echo ON > $switch
     echo $origin > $switch
     echo OFF > $switch
@@ -303,11 +355,67 @@ test_switch_bumblebee() {
 }
 
 test_switch() {
+    [[ x$opt_dryrun == x1 ]] && return 0
+
     if has_vgaswitcheroo; then
         test_switch_vgaswitcheroo
     elif has_optimus; then
         test_switch_bumblebee
     fi
+}
+
+test_offload_rendering() {
+    local provider sink offloading_capable dri
+
+    eval provider="\${${INACTIVE_CARD}_NAME}"
+    eval sink="\${${ACTIVE_CARD}_NAME}"
+
+    eval offloading_capable="\${${INACTIVE_CARD}_SRC_OFFLOAD}"
+    [[  x$offloading_capable != x1 ]] && return 0
+
+    eval offloading_capable="\${${ACTIVE_CARD}_SINK_OFFLOAD}"
+    [[  x$offloading_capable != x1 ]] && return 0
+
+    [[ x$opt_dryrun == x1 ]] && return 0
+
+    start_xserver
+
+    xrandr --setprovideroffloadsink $provider $sink
+    export DRI_PRIME=1
+    check_glx
+
+    dri=`xdriinfo | cut -d: -f2`
+    case $provider in
+        [Ii]ntel)
+            if [[ $dri != i915 || $dri != i965 ]]; then
+                bad "offloading seems failed"
+                exit 1
+            fi
+            ;;
+        NVIDIA*|nvidia*)
+            if [[ $dri != nvidia ]]; then
+                bad "offloading seems failed"
+                exit 1
+            fi
+            ;;
+        radeon)
+            if [[ $dri != radeon ]]; then
+                bad "offloading seems failed"
+                exit 1
+            fi
+            ;;
+        nouveau)
+            if [[ $dri != nouveau ]]; then
+                bad "offloading seems failed"
+                exit 1
+            fi
+            ;;
+    esac
+
+    unset DRI_PRIME
+    xrandr --setprovideroffloadsink $provider 0
+
+    stop_xserver
 }
 
 check_driver_loaded() {
@@ -329,6 +437,7 @@ check_driver_loaded() {
 # we assume DISPLAY will always be :0 if success
 start_xserver() {
     if [[ x$opt_dryrun == x1 ]]; then
+        export DISPLAY=:0
         return 0
     fi
 
@@ -350,11 +459,11 @@ start_xserver() {
 }
 
 stop_xserver() {
+    unset DISPLAY
+
     if [[ x$opt_dryrun == x1 ]]; then
         return 0
     fi
-
-    unset DISPLAY
 
     pid=`pgrep -n -u $USER Xorg`
     if [[ -n $pid ]]; then
@@ -386,7 +495,7 @@ fi
 # run X to get info from and then quit for doing testing
 start_xserver
 
-if ! check_driver_loaded; then
+if [[ x$opt_dryrun != x1 && ! check_driver_loaded ]]; then
     bad "at least one graphic card has no driver"
     stop_xserver
     exit 1
@@ -397,18 +506,16 @@ parse_cards_info
 #FIXME: I found that when install nvidia proprietary driver, data under 
 # /sys/class/drm/cardX is not adequte for parsing connectors related info
 
-printf "     name\tstatus\tbus\tboot\tdrv\tdrm\n"
-printf "DIS: %s\t%s\t%s\t%s\t%s\t%s\n"  \
-    $DIS_NAME $DIS_STATUS $DIS_BUS $DIS_BOOT $DIS_DRIVER $DIS_DRMID
-printf "IGD: %s\t%s\t%s\t%s\t%s\t%s\n" \
-    $IGD_NAME $IGD_STATUS $IGD_BUS $IGD_BOOT $IGD_DRIVER $IGD_DRMID
+printf "     name\tstatus\tbus\tboot\tdrv\tdrmid\tsrcoff\tsinkoff\n"
+printf "DIS: %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n"  \
+    $DIS_NAME $DIS_STATUS $DIS_BUS $DIS_BOOT $DIS_DRIVER $DIS_DRMID $DIS_SRC_OFFLOAD $DIS_SINK_OFFLOAD
+printf "IGD: %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+    $IGD_NAME $IGD_STATUS $IGD_BUS $IGD_BOOT $IGD_DRIVER $IGD_DRMID $IGD_SRC_OFFLOAD $IGD_SINK_OFFLOAD
 
 stop_xserver
 
-if [[ x$opt_dryrun == x1 ]]; then
-    test_switch
+test_switch
 
-    test_offload_rendering 
-fi
+test_offload_rendering 
 
 
