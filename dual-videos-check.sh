@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # check dual graphics video card setup
-# this test works when DISPLAY is set and need sudo (without passwd) to 
+# this test works when DISPLAY is set and need to run under root
 # access some priviledged files.
 
 DEBUG=1
@@ -35,9 +35,10 @@ has_dual_cards() {
 }
 
 has_vgaswitcheroo() {
-    sudo bash -c '[[ -e /sys/kernel/debug/vgaswitcheroo/switch ]]'
+    bash -c '[[ -e /sys/kernel/debug/vgaswitcheroo/switch ]]'
 }
 
+# FIXME: how to know it?
 has_optimus() {
     false
 }
@@ -46,14 +47,7 @@ has_optimus() {
 parse_vgaswitch_file() {
     local switch_file oldifs 
 
-    switch_file=$(mktemp -t video_test_XXXXXX)
-    sudo cat /sys/kernel/debug/vgaswitcheroo/switch > $switch_file
-
-    #FIXME: remove it, test only
-    cat > $switch_file <<EOF
-0:DIS: :DynOff:0000:01:00.0
-1:IGD:+:Pwr:0000:00:02.0
-EOF
+    switch_file=/sys/kernel/debug/vgaswitcheroo/switch
 
     oldifs=$IFS
     IFS=:
@@ -72,7 +66,6 @@ EOF
         #echo $ty $status $bus:$slot
     done < $switch_file
 
-    rm $switch_file
     IFS=$oldifs
 }
 
@@ -252,10 +245,57 @@ test_offload_rendering() {
     [[ ! offloding_capable ]] && return 0
 }
 
+# check if current driving device is $arg1
+check_vgaswitcheroo_result() {
+    local target=$1
+    local switch_file oldifs ret=1
+
+    switch_file=/sys/kernel/debug/vgaswitcheroo/switch
+
+    oldifs=$IFS
+    IFS=:
+    while read id ty status pwr domain bus slot; do
+        if [ x$status == x+ ]; then
+            status=1
+        else
+            status=0
+        fi
+
+        if [[ $ty == $target && $status -eq 1 ]]; then
+            break
+        fi
+    done < $switch_file
+
+    IFS=$oldifs
+    return $ret
+}
+
 test_switch_vgaswitcheroo() {
-    #TODO: switch
-    #TODO: check offload rendering
-    :
+    local switch target origin
+
+    switch=/sys/kernel/debug/vgaswitcheroo/switch
+
+    if [[ x$DIS_STATUS -eq 1 ]]; then
+        origin=DIS
+        target=IGD
+
+    else
+        origin=IGD
+        target=DIS
+    fi
+
+    echo ON > $switch
+    echo $target > $switch
+    echo OFF > $switch
+    sleep .1
+
+    if ! check_vgaswitcheroo_result $target; then
+        bad "switch to IGD failed"
+        exit 1
+    fi
+    echo ON > $switch
+    echo $origin > $switch
+    echo OFF > $switch
 }
 
 test_switch_bumblebee() {
@@ -285,24 +325,70 @@ check_driver_loaded() {
     return 0
 }
 
+# since we do not allow tow Xorg to be running simultaneously, 
+# we assume DISPLAY will always be :0 if success
 start_xserver() {
-    :
+    if [[ x$opt_dryrun == x1 ]]; then
+        return 0
+    fi
+
+    if [[ -z $HOME ]]; then
+        export HOME=/root
+    fi
+
+    if [[ -z $USER ]]; then
+        export USER=root
+    fi
+
+    pid=`pgrep -n -u $USER Xorg`
+    if [[ -z $pid ]]; then
+        xinit &
+    fi
+
+    export DISPLAY=:0
+    sleep .1
 }
 
 stop_xserver() {
-    :
+    if [[ x$opt_dryrun == x1 ]]; then
+        return 0
+    fi
+
+    unset DISPLAY
+
+    pid=`pgrep -n -u $USER Xorg`
+    if [[ -n $pid ]]; then
+        kill $pid
+    fi
+
+    sleep .1
 }
 
-# run X to get info from and then quit for doing testing
-start_xserver
+usage() {
+    echo "$0 [-n dryrun] [-h]" >&2
+    exit 1
+}
 
-if ! has_dual_cards; then 
+while getopts hn opt; do
+    case $opt in
+        n) opt_dryrun=1
+            ;;
+        h)  usage
+            ;;
+    esac
+done
+
+if [[ x$opt_dryrun != x1 && ! has_dual_cards ]]; then 
     msg "no dual cards setup, just quit"
     exit 0;
 fi
 
+# run X to get info from and then quit for doing testing
+start_xserver
+
 if ! check_driver_loaded; then
     bad "at least one graphic card has no driver"
+    stop_xserver
     exit 1
 fi
 
@@ -311,7 +397,7 @@ parse_cards_info
 #FIXME: I found that when install nvidia proprietary driver, data under 
 # /sys/class/drm/cardX is not adequte for parsing connectors related info
 
-printf "     name\tsta\tbus\tboot\tdrv\tdrm\n"
+printf "     name\tstatus\tbus\tboot\tdrv\tdrm\n"
 printf "DIS: %s\t%s\t%s\t%s\t%s\t%s\n"  \
     $DIS_NAME $DIS_STATUS $DIS_BUS $DIS_BOOT $DIS_DRIVER $DIS_DRMID
 printf "IGD: %s\t%s\t%s\t%s\t%s\t%s\n" \
@@ -319,7 +405,10 @@ printf "IGD: %s\t%s\t%s\t%s\t%s\t%s\n" \
 
 stop_xserver
 
-test_switch
+if [[ x$opt_dryrun == x1 ]]; then
+    test_switch
 
-test_offload_rendering 
+    test_offload_rendering 
+fi
+
 
